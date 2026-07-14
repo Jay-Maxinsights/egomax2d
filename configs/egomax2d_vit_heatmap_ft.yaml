@@ -1,0 +1,77 @@
+seed_everything: 42
+
+# EgoMax2D domain-adaptation fine-tune of the Stage1 ViT heatmap model.
+# - Whole-model warm start (pretrained_ckpt): originally from the EgoBody3M
+#   Stage1 best ckpt (epoch=17-val_l1_error=1077.8, absent in this release);
+#   now points at the shipped EgoMax2D FT ckpt, so further fine-tuning on new
+#   sessions warm-starts from the released weights. Alternatively, resume with
+#   optimizer state via: python run.py fit --config ... --ckpt_path <ckpt>.
+# - Do NOT train on the 8 shipped sessions — they are the held-out test set.
+# - 26-channel head kept; masked MSE supervises only channels {2,3,6,7,10}
+#   (shoulders/elbows/pelvis) where a human label exists. out_of_frame entries
+#   (incl. the conf>0 no-coords ones) are filtered in the dataset.
+# - Images: calibration remap (per-session DS -> EgoBody3M cam1/2 geometry,
+#   90-deg ray rotation) + grayscale, cached to data/EgoMax2D_256 on first run.
+# - Split 8:1:1 by sorted session name: train 66 / validation 8 / test 8.
+# - Human keyframes only (sources 2=first-pass, 3=manual, 4=occluded-with-
+#   coords), weight 1.0; interpolated frames excluded for now.
+model:
+  class_path: pose_estimation.pl_wrappers.PoseHeatmapFTLightningModel
+  init_args:
+    model_cfg:
+      num_heatmap: 26            # keep all EgoBody3M channels (wrists preserved)
+      encoder_cfg:
+        type: vit
+        model_name: vit_base_patch16_224.augreg_in21k
+        pretrained: False        # weights come from pretrained_ckpt below
+        img_size: 256
+        out_stride: 4
+        out_channels: 128
+        neck_mid_channels: 256
+        drop_path_rate: 0.1
+        grad_checkpointing: False
+        weights_path: null
+      train_cfg:
+        w_heatmap: 10.0
+    pretrained_ckpt: work_dirs/egomax2d_vit_heatmap_ft/checkpoints/epoch=2-val_kp_px_error=4.89.ckpt
+    dataset_type: egomax2d
+    data_root: ./data/EgoMax2D
+    lr: 0.00002                  # 2e-5 flat (fine-tune)
+    weight_decay: 0.05
+    lr_decay_epochs:             # beyond max_epochs -> LR stays flat
+      - 10
+      - 12
+    warmup_iters: 0
+    batch_size: 128              # V=2 views/sample -> 256 imgs/step (Stage1 was 512 @49GB)
+    workers: 16
+    dataset_kwargs:
+      cached_root: ./data/EgoMax2D_256
+      label_sources: [2, 3, 4]   # human keyframes only; add 1 later for interpolated
+      sigma: 2.0
+
+trainer:
+  max_epochs: 3
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 50
+  devices: 1
+  benchmark: true
+  precision: bf16-mixed
+  callbacks:
+    - class_path: pose_estimation.callbacks.TimestampedTrainingLogger
+      init_args:
+        log_dir: ./work_dirs/egomax2d_vit_heatmap_ft
+        log_every_n_steps: 50
+    - class_path: pytorch_lightning.callbacks.TQDMProgressBar
+      init_args:
+        refresh_rate: 50
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_kp_px_error
+        mode: min
+        save_top_k: 3
+        save_last: true
+        filename: "{epoch}-{val_kp_px_error:.2f}"
+  logger:
+    - class_path: pytorch_lightning.loggers.CSVLogger
+      init_args:
+        save_dir: ./work_dirs/egomax2d_vit_heatmap_ft

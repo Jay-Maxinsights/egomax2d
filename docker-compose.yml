@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  egomax2d:
+    build:
+      context: .
+      dockerfile: Dockerfile.h100
+    image: egomax2d:h100
+    gpus: all
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      # 代码实时同步（开发时用）
+      - .:/workspace/egomax2d
+      # 数据挂载（不打包进镜像）
+      - ./data:/workspace/egomax2d/data
+      # checkpoint 持久化
+      - ./work_dirs:/workspace/egomax2d/work_dirs
+    working_dir: /workspace/egomax2d
+    shm_size: "16gb"       # DataLoader 多进程共享内存
+    ipc: host              # 必须，否则多 worker DataLoader 会卡死
+    stdin_open: true
+    tty: true
+    command: bash

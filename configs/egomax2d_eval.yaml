@@ -1,0 +1,53 @@
+# EgoMax2D evaluation-only config (release).
+# Differences vs the training config (egomax2d_vit_heatmap_ft.yaml):
+#   - pretrained_ckpt: null — weights come from --ckpt_path on the command
+#     line, not from an EgoBody3M warm-start checkpoint (absent in release).
+#   - split_ratio [0, 0, 1]: EVERY session under data_root is treated as the
+#     test split. The release data/ ships only the 8 held-out test sessions,
+#     so this reproduces the original test-split metrics exactly.
+# Usage:
+#   python run.py test --config configs/egomax2d_eval.yaml \
+#     --ckpt_path "work_dirs/egomax2d_vit_heatmap_ft/checkpoints/epoch=2-val_kp_px_error=4.89.ckpt"
+seed_everything: 42
+
+model:
+  class_path: pose_estimation.pl_wrappers.PoseHeatmapFTLightningModel
+  init_args:
+    model_cfg:
+      num_heatmap: 26
+      encoder_cfg:
+        type: vit
+        model_name: vit_base_patch16_224.augreg_in21k
+        pretrained: False
+        img_size: 256
+        out_stride: 4
+        out_channels: 128
+        neck_mid_channels: 256
+        drop_path_rate: 0.1
+        grad_checkpointing: False
+        weights_path: null
+      train_cfg:
+        w_heatmap: 10.0
+    pretrained_ckpt: null        # weights supplied via --ckpt_path
+    dataset_type: egomax2d
+    data_root: ./data/EgoMax2D
+    lr: 0.00002                  # unused at test time (required init args)
+    weight_decay: 0.05
+    lr_decay_epochs: [10, 12]
+    warmup_iters: 0
+    batch_size: 32
+    workers: 8
+    dataset_kwargs:
+      cached_root: ./data/EgoMax2D_256
+      label_sources: [2, 3, 4]   # human keyframes only, same as training eval
+      sigma: 2.0
+      split_ratio: [0.0, 0.0, 1.0]   # all sessions under data_root -> test
+
+trainer:
+  devices: 1
+  benchmark: true
+  precision: bf16-mixed
+  logger:
+    - class_path: pytorch_lightning.loggers.CSVLogger
+      init_args:
+        save_dir: ./work_dirs/egomax2d_eval

@@ -1,0 +1,3 @@
+from .egobody3m_heatmap import EgoBody3MHeatmapDataset
+from .egobody3m_3dpose import EgoBody3M3DPoseDataset
+from .egobody3m_3dpose_seq import EgoBody3M3DPoseSeqDataset

@@ -1,0 +1,23 @@
+# ── H100 版本：PyTorch 2.1 + CUDA 12.1 ────────────────────────────────────────
+# （release 只含 ViT heatmap 模型，无 deformable-attention，不再需要 mmcv 源码编译）
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ffmpeg libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev \
+    zip unzip wget \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+RUN pip install --no-cache-dir 'jsonargparse[signatures]>=4.18.0'
+
+WORKDIR /workspace/egomax2d
+COPY . .
+RUN pip install --no-cache-dir -e .
+
+CMD ["bash"]

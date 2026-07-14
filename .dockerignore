@@ -1,0 +1,31 @@
+# 不打包进镜像的大文件
+data/
+work_dirs/
+output/
+output_demo/
+" ckpt/"
+*.mp4
+*.avi
+mylog.txt
+*.pid
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# 日志
+*.log
+lightning_logs/
