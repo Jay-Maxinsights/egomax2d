@@ -58,11 +58,9 @@ egomax2d_release
 sudo docker build -f Dockerfile.h100 -t egomax2d:h100 .
 bash run_h100_container.sh
 
-# Or use docker compose (equivalent entry point)
-docker compose build && docker compose run --rm egomax2d
 ```
 
-Fine-tuned weights (not distributed via git; copy into place separately):
+Fine-tuned checkpoints (not distributed via git; copy from internal ssd):
 
 ```
 work_dirs/egomax2d_vit_heatmap_ft/checkpoints/epoch=2-val_kp_px_error=4.89.ckpt
@@ -138,7 +136,7 @@ Produce demo videos in the **raw pixel space** (2592×1944 upright color frames)
 are mapped back onto the raw images through the inverse transform chain:
 
 ```shell
-python inference/tran2org.py --sessions 0        # sorted index, ranges like '0-3', or 'all'
+python inference/tran2org.py --sessions 0        # sorted seq index, ranges like '0-3', or 'all' 
 ```
 
 ## 3. Evaluation (GT Metrics)
@@ -175,5 +173,5 @@ Notes:
 
 Whole-model warm start from the EgoBody3M Stage1 ViT heatmap checkpoint; the 26-channel head is
 kept unchanged, with a masked MSE supervising only the 5 labeled channels {2,3,6,7,10};
-lr 2e-5 / 3 epochs / bs 128 (~5 minutes on an H100, ~25.6 GB peak training memory).
+lr 2e-5 / 3 epochs / bs 128 on H100.
 Zero-shot ≈30 px → after fine-tuning: val 4.89 px / test 5.49 px.
