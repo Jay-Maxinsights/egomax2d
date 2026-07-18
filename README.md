@@ -55,8 +55,14 @@ egomax2d_release
 ```shell
 # Build the image (one-time) and enter the container
 # (mounts the current directory as /workspace/egomax2d)
-sudo docker build -f Dockerfile.h100 -t egomax2d:h100 .
+
+# 1. For h100
+sudo docker build -f Dockerfile.h100 -t egomax2d:h100 . 
 bash run_h100_container.sh
+
+# 2. For rtx5090 (titan also work)
+sudo docker build -f Dockerfile.rtx5090 -t egomax2d:rtx5090 . 
+bash run_container.sh rtx5090
 
 ```
 

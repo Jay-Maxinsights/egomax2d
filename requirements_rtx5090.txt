@@ -1,0 +1,31 @@
+# Core training
+pytorch-lightning==2.1.0
+torchmetrics==1.2.1
+jsonargparse==4.49.0
+
+# Vision & data
+timm==1.0.15               # ViT backbone for EPFv2 (Stage1/Stage2)
+# torchvision==0.14.1+cu116
+opencv-python==4.9.0.80
+Pillow==12.2.0
+numpy==1.23.5
+
+# Pose & numeric
+numba==0.58.1               # bumped from 0.56.4: needs cp311 wheel for Python 3.11 (rtx5090 base image)
+scipy
+
+# Visualization
+matplotlib==3.10.9
+
+# Utils
+PyYAML==6.0.3
+tqdm==4.65.2
+addict==2.4.0
+yapf==0.43.0
+pandas==2.3.3
+tabulate==0.10.0
+rich==13.4.2
+psutil==5.9.*              # per-process RAM/disk sampling for profile_run.py
+
+# mmcv extras
+openmim==0.3.9
