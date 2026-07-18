@@ -378,6 +378,7 @@ def main():
     use_cuda = args.device.startswith("cuda")
     gpu_ms = []          # pure model forward (backbone + heatmap head), per stereo pair
     e2e_ms = []          # H2D copy + forward + D2H copy, per stereo pair
+    predictions = {}
     with torch.no_grad():
         for fi, idx in enumerate(idxs):
             if fi % 50 == 0:
@@ -397,6 +398,7 @@ def main():
                 ev0.record()
             else:
                 t_fwd0 = time.perf_counter()
+          
             feats = model.forward_backbone(img_t)
             hm_gpu = model.conv_heatmap(feats.view(B * V, *feats.shape[2:]))
             if use_cuda:
@@ -407,9 +409,14 @@ def main():
                 gpu_ms.append((time.perf_counter() - t_fwd0) * 1000.0)
             heatmaps = hm_gpu.cpu().numpy()
             e2e_ms.append((time.perf_counter() - t_e2e0) * 1000.0)
-            pred_l = decode_heatmap(heatmaps[0])
-            pred_r = decode_heatmap(heatmaps[1])
-
+            pred_l = decode_heatmap(heatmaps[0]) # Left camera prediction
+            pred_r = decode_heatmap(heatmaps[1]) # Right camera prediction
+            # Store predictions in a dict
+            predictions[idx] = {
+                "left": {"joints": pred_l[0], "confidences": pred_l[1]},
+                "right": {"joints": pred_r[0], "confidences": pred_r[1]},
+            }
+    
             frame_l = toon[CAMS[0][0]]["frames"]["%06d" % idx]
             frame_r = toon[CAMS[1][0]]["frames"]["%06d" % idx]
             gt_l = get_gt_joints(frame_l, *remap_cfg[CAMS[0][1]], args.rotate)
@@ -429,6 +436,11 @@ def main():
     print(f"\nVideo -> {out_video}")
     if args.save_frames:
         print(f"Frames -> {frames_dir}/")
+
+    # Save predictions to a .pt file
+    predictions_path = os.path.join(args.output_dir, f"{session}_predictions.pt")
+    torch.save(predictions, predictions_path)
+    print(f"Predictions -> {predictions_path}")
 
     # ── timing report ──────────────────────────────────────────────────────────
     timing_csv = os.path.join(args.output_dir, f"{session}_timing.csv")
