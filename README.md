@@ -63,7 +63,11 @@ bash run_h100_container.sh
 # 2. For rtx5090 (titan also work)
 sudo docker build -f Dockerfile.rtx5090 -t egomax2d:rtx5090 . 
 bash run_container.sh rtx5090
+```
 
+```Bash
+# Development (no need to rebuild everytime we change the code)
+docker compose -f docker-compose-rtx5090.yml run --rm egomax2d bash
 ```
 
 Fine-tuned checkpoints (not distributed via git; copy from internal ssd):
