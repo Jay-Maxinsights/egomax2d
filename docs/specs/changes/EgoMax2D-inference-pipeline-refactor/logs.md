@@ -1,5 +1,9 @@
 # Implementation logs
 
+> Convention (see repo `CLAUDE.md`): log only what fell outside the plan, or bugs hit
+> during implementation. Do not restate tasks from `tasks/commit-N.md`, and do not
+> document the same thing twice. A commit with no deviations needs no entry.
+
 ## commit-1-logs
 
 - Git commit: `0510d28 refactor(inference): establish egomax2d pipeline model package`.
