@@ -149,6 +149,33 @@ def preprocess(image_dir: str, map_x: np.ndarray, map_y: np.ndarray) -> torch.Te
     return tensor
 
 
+def batch_preprocess(image_dirs: list[str],
+                     maps: list[tuple[np.ndarray, np.ndarray]]) -> torch.Tensor:
+    """Batched CPU version of preprocess().
+
+    Load + remap a list of frames and stack them into one tensor. Each path
+    uses its aligned (map_x, map_y). The per-image transform (remap ->
+    grayscale x3 -> /255) is identical to preprocess(), so outputs match the
+    single-image path exactly.
+
+    Args:
+        - image_dirs: list[str], paths to the images.
+        - maps: list of (map_x, map_y) tuples, aligned with image_dirs.
+    Returns:
+        - torch.Tensor, preprocessed batch of shape (N, 3, 256, 256).
+    """
+    tensors = []
+    for path, (map_x, map_y) in zip(image_dirs, maps):
+        bgr = cv2.imread(path)
+        remapped = cv2.remap(bgr, map_x, map_y, cv2.INTER_LINEAR,
+                             borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        gray = cv2.cvtColor(remapped, cv2.COLOR_BGR2GRAY)
+        canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        rgb = canvas[:, :, ::-1].astype(np.float32) / 255.0
+        tensors.append(torch.from_numpy(rgb.transpose(2, 0, 1).copy()))
+    return torch.stack(tensors, dim=0)  # (N, 3, 256, 256)
+
+
 # BT.601 luma weights — identical to cv2.COLOR_BGR2GRAY
 _GRAY_W = torch.tensor([0.299, 0.587, 0.114])
 
@@ -453,8 +480,12 @@ def main():
             if fi % 50 == 0:
                 print(f"  {fi}/{len(idxs)}  frame {idx:06d}")
 
-            # bgr_l = cv2.imread(os.path.join(session_dir, "images", CAMS[0][1], f"frame_{idx:08d}.jpg"))
-            # bgr_r = cv2.imread(os.path.join(session_dir, "images", CAMS[1][1], f"frame_{idx:08d}.jpg"))
+            # # Original CPU version
+            bgr_l = cv2.imread(os.path.join(session_dir, "images", CAMS[0][1], f"frame_{idx:08d}.jpg"))
+            bgr_r = cv2.imread(os.path.join(session_dir, "images", CAMS[1][1], f"frame_{idx:08d}.jpg"))
+
+            canvas_l, tensor_l = remap_preprocess(bgr_l, *remaps[CAMS[0][1]])
+            canvas_r, tensor_r = remap_preprocess(bgr_r, *remaps[CAMS[1][1]])
 
 
 
@@ -466,17 +497,14 @@ def main():
             #     os.path.join(session_dir, "images", CAMS[1][1], f"frame_{idx:08d}.jpg"), 
             #     *remaps[CAMS[1][1]]
             # )
-            tensor_l, tensor_r = preprocess_gpu(
-                [
-                    os.path.join(session_dir, "images", CAMS[0][1], f"frame_{idx:08d}.jpg"),
-                    os.path.join(session_dir, "images", CAMS[1][1], f"frame_{idx:08d}.jpg"),
-                ],
-                [remaps[CAMS[0][1]], remaps[CAMS[1][1]]],
-                device=args.device,
-            )
-
-            # canvas_l, tensor_l = remap_preprocess(bgr_l, *remaps[CAMS[0][1]])
-            # canvas_r, tensor_r = remap_preprocess(bgr_r, *remaps[CAMS[1][1]])
+            # tensor_l, tensor_r = preprocess_gpu(
+            #     [
+            #         os.path.join(session_dir, "images", CAMS[0][1], f"frame_{idx:08d}.jpg"),
+            #         os.path.join(session_dir, "images", CAMS[1][1], f"frame_{idx:08d}.jpg"),
+            #     ],
+            #     [remaps[CAMS[0][1]], remaps[CAMS[1][1]]],
+            #     device=args.device,
+            # )
 
             t_e2e0 = time.perf_counter()
             img_t = torch.stack([tensor_l, tensor_r]).unsqueeze(0).to(args.device)
@@ -551,5 +579,136 @@ def main():
     print(f"Timing CSV -> {timing_csv}")
 
 
+# ── batched main ─────────────────────────────────────────────────────────────
+
+def batch_main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--ckpt", default=DEFAULT_CKPT)
+    parser.add_argument("--root", default="data/EgoMax2D")
+    parser.add_argument("--session", default=None, help="exact session ID; overrides --session-idx")
+    parser.add_argument("--session-idx", type=int, default=0, help="sorted-index pick when --session not given")
+    parser.add_argument("--output-dir", default="results/heatmap_egomax2d")
+    parser.add_argument("--step", type=int, default=1, help="frame sampling step (default 1 = every frame)")
+    parser.add_argument("--max-frames", type=int, default=0)
+    parser.add_argument("--batch-size", type=int, default=512,
+                        help="number of stereo frames per model forward (model batch = batch_size*2)")
+    parser.add_argument("--rotate", choices=["right", "left", "none"], default="right")
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--timing-warmup", type=int, default=10,
+                        help="first N forwards excluded from timing stats (CUDA init/JIT)")
+    args = parser.parse_args()
+
+    session = resolve_session(args.root, args.session, args.session_idx)
+    session_dir = os.path.join(args.root, session)
+    print(f"Session: {session}")
+
+    calib = load_session_calib(session_dir)
+    # left cam -> EgoBody3M cam1 geometry, right cam -> cam2
+    remap_cfg = {
+        "head-front-left": (calib["videoFL"], dict(_EGOBODY3M_DS_PARAMS[1])),
+        "head-front-right": (calib["videoFR"], dict(_EGOBODY3M_DS_PARAMS[2])),
+    }
+    remaps = {cam_dir: build_remap(eb, src, args.rotate)
+              for cam_dir, (src, eb) in remap_cfg.items()}
+
+    # Count total frames
+    n_frames = len(os.listdir(os.path.join(session_dir, "images", CAMS[0][1])))
+    idxs = list(range(0, n_frames, args.step))
+    if args.max_frames > 0:
+        idxs = idxs[: args.max_frames]
+    fps = 30
+
+    model = load_model(args.ckpt).to(args.device)
+
+    bs = max(1, args.batch_size)
+    n_batches = (len(idxs) + bs - 1) // bs
+    print(f"Frames: {len(idxs)}/{n_frames}  |  device: {args.device}  |  "
+          f"rotate: {args.rotate}  |  fps: {fps:g}  |  batch-size: {bs}  |  batches: {n_batches}")
+
+    V = 2
+    use_cuda = args.device.startswith("cuda")
+    gpu_ms = []          # pure model forward (backbone + heatmap head), per batch
+    e2e_ms = []          # H2D copy + forward + D2H copy, per batch
+    batch_nframes = []   # frames in each batch (last may be partial)
+    predictions = {}
+    with torch.no_grad():
+        for bi_batch in range(n_batches):
+            chunk = idxs[bi_batch * bs: (bi_batch + 1) * bs]
+            if bi_batch % 50 == 0:
+                print(f"  batch {bi_batch}/{n_batches}  frames {chunk[0]:06d}..{chunk[-1]:06d}")
+
+            # Build flat path/map lists grouped per frame: [f0_L, f0_R, f1_L, f1_R, ...]
+            paths, maps_list = [], []
+            for idx in chunk:
+                for _cam_key, cam_dir in CAMS:      # left, then right
+                    paths.append(os.path.join(session_dir, "images", cam_dir, f"frame_{idx:08d}.jpg"))
+                    maps_list.append(remaps[cam_dir])
+
+            # flat = batch_preprocess(paths, maps_list)   # (B*V, 3, 256, 256) CPU
+            flat = preprocess_gpu(paths, maps_list, device=args.device)   # (B*V, 3, 256, 256) on device
+            B = len(chunk)
+            assert flat.shape == (B * V, 3, IMG_SIZE, IMG_SIZE), flat.shape
+
+            t_e2e0 = time.perf_counter()
+            img_t = flat.view(B, V, 3, IMG_SIZE, IMG_SIZE).to(args.device)
+            if use_cuda:
+                ev0 = torch.cuda.Event(enable_timing=True)
+                ev1 = torch.cuda.Event(enable_timing=True)
+                ev0.record()
+            else:
+                t_fwd0 = time.perf_counter()
+
+            feats = model.forward_backbone(img_t)
+            hm_gpu = model.conv_heatmap(feats.view(B * V, *feats.shape[2:]))
+            if use_cuda:
+                ev1.record()
+                torch.cuda.synchronize()
+                gpu_ms.append(ev0.elapsed_time(ev1))
+            else:
+                gpu_ms.append((time.perf_counter() - t_fwd0) * 1000.0)
+            heatmaps = hm_gpu.cpu().numpy()             # (B*V, 26, 64, 64)
+            e2e_ms.append((time.perf_counter() - t_e2e0) * 1000.0)
+            batch_nframes.append(B)
+            assert heatmaps.shape == (B * V, MODEL_CFG["num_heatmap"], HM_SIZE, HM_SIZE), heatmaps.shape
+
+            for bi, idx in enumerate(chunk):
+                pred_l = decode_heatmap(heatmaps[bi * V + 0])   # Left camera prediction
+                pred_r = decode_heatmap(heatmaps[bi * V + 1])   # Right camera prediction
+                predictions[idx] = {
+                    "left": {"joints": pred_l[0], "confidences": pred_l[1]},
+                    "right": {"joints": pred_r[0], "confidences": pred_r[1]},
+                }
+
+    # Save predictions to a .pt file
+    predictions_path = os.path.join(args.output_dir, f"{session}_predictions.pt")
+    torch.save(predictions, predictions_path)
+    print(f"Predictions -> {predictions_path}")
+
+    # ── timing report ──────────────────────────────────────────────────────────
+    timing_csv = os.path.join(args.output_dir, f"{session}_timing.csv")
+    with open(timing_csv, "w") as f:
+        f.write("batch_idx,n_frames,gpu_forward_ms_batch,e2e_ms_batch\n")
+        for i in range(len(gpu_ms)):
+            f.write(f"{i},{batch_nframes[i]},{gpu_ms[i]:.3f},{e2e_ms[i]:.3f}\n")
+
+    warm = min(args.timing_warmup, max(len(gpu_ms) - 1, 0))
+    g = np.array(gpu_ms[warm:])
+    e = np.array(e2e_ms[warm:])
+    imgs_per_batch = bs * V
+    dev_name = torch.cuda.get_device_name(0) if use_cuda else "cpu"
+    print(f"\n=== Inference timing ({dev_name}, warmup {warm} excluded, n={len(g)}) ===")
+    print(f"Each forward = 1 batch = {bs} stereo pairs = {imgs_per_batch} images "
+          f"(batch {bs}x{V}x3x256x256)")
+    for name, a in [("GPU forward", g), ("e2e (H2D+fwd+D2H)", e)]:
+        print(f"{name:>18}: mean {a.mean():6.2f} ms/batch  |  per-image {a.mean() / imgs_per_batch:6.2f} ms  |  "
+              f"median {np.median(a):6.2f}  p95 {np.percentile(a, 95):6.2f}  "
+              f"min {a.min():6.2f}  max {a.max():6.2f}")
+    print(f"{'throughput':>18}: {1000.0 / g.mean():6.1f} batch/s  =  "
+          f"{1000.0 * imgs_per_batch / g.mean():6.1f} img/s  (GPU forward only)")
+    print(f"Timing CSV -> {timing_csv}")
+
+
 if __name__ == "__main__":
-    main()
+    batch_main()
+    # main()
