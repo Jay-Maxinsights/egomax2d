@@ -39,3 +39,21 @@
 - `python -m pytest tests/test_folder_input_source.py -q`: `8 passed` in the base
   environment. The RTX 5090 Docker image ran the config, folder-input, and legacy CUDA
   preprocess tests together with `14 passed` and no skips.
+
+## commit-4-logs
+
+- Git commit: `6c13855 feat(inference): add decoupled resource monitoring`.
+- Added a decoupled `ResourceMonitor` with CUDA-event model timing, `perf_counter` E2E
+  and wall timing, torch peak-VRAM tracking, Linux `VmHWM`, and `/proc/self/io`
+  write-byte deltas.
+- Every model and E2E sample retains its actual stereo-frame and derived view count, so
+  partial batches produce correct per-view statistics and throughput. Warmup exclusion
+  always retains one sample when timing data is non-empty.
+- Missing CUDA and `/proc` metrics are omitted with report notes; model timing falls
+  back to `perf_counter`. Disabled monitoring performs no timing, resource, output, or
+  validation work.
+- Reports include raw samples, mean/median/p95/min/max aggregates, resource values, and
+  optional JSON output whose parent directory is created automatically.
+- `python -m pytest tests/test_monitor.py -q`: `3 passed` in the base environment using
+  controlled clock, CUDA-event, and resource values. The combined config, folder-input,
+  and monitor regression run completed with `16 passed`.
