@@ -1,17 +1,18 @@
-"""Compare GPU preprocessing with the CPU reference.
+"""Compare ``Pipeline.preprocess`` with the legacy GPU fast path.
 
-The default comparison runs these two implementations from
-``inference/inference_heatmap_egomax2d_dev.py``:
+The pipeline stage flattens a ``FrameBatch`` into the interleaved order
+``[f0_left, f0_right, f1_left, f1_right, ...]``, runs the existing
+``preprocess_gpu`` implementation from
+``inference/inference_heatmap_egomax2d_dev.py``, and reshapes to
+``(B, 2, 3, 256, 256)``. This test asserts the pipeline stage reproduces the
+legacy fast path exactly, including the interleaved view ordering:
 
-* ground truth: ``preprocess`` (one image at a time on CPU)
-* function under test: ``preprocess_gpu`` (all configured images in one batch)
+* ground truth: ``preprocess_gpu`` over the same flat path/map lists, reshaped
+* function under test: ``Pipeline.preprocess(FrameBatch)``
 
-For every output tensor value, the reported relative difference is
-
-    abs(test - gt) / max(abs(gt), REL_EPS)
-
-Reporting only -- no numerical threshold is enforced. Input paths and report
-statistics are configured in the module globals below.
+Model loading is monkeypatched so the test measures preprocessing rather than
+checkpoint startup. Input paths and report statistics are configured in the
+module globals below.
 
 python -m pytest tests/test_preprocess.py -q
 """
@@ -22,19 +23,26 @@ import numpy as np
 import pytest
 import torch
 
-from inference.inference_heatmap_egomax2d_dev import (
-    preprocess,
-    preprocess_gpu,
-)
+from inference.inference_heatmap_egomax2d_dev import preprocess_gpu
+from inference.egomax2d_pipeline import pipeline as pipeline_mod
+from inference.egomax2d_pipeline.configs.constant import IMG_SIZE
+from inference.egomax2d_pipeline.configs.utils import load_calibration
+from inference.egomax2d_pipeline.io.reader import FrameBatch
+from inference.egomax2d_pipeline.pipeline import Pipeline
 from pose_estimation.datasets.egomax2d.remap import build_session_remaps
 
 
-# Raw left-camera images and their session directory.
+# Raw left-camera images and their session directory. Right-camera paths are
+# derived by swapping the camera folder so the pair is genuinely stereo.
 SESSION_DIR = "/home/max/jay/HIL_pose_annotation/egomax2d/data/EgoMax2D/01KWEDQ9HG6CSF6CNW0QVFV92E"
-IMAGE_PATHS = [
+LEFT_PATHS = [
     "/home/max/jay/HIL_pose_annotation/egomax2d/data/EgoMax2D/01KWEDQ9HG6CSF6CNW0QVFV92E/images/head-front-left/frame_00000000.jpg",
     "/home/max/jay/HIL_pose_annotation/egomax2d/data/EgoMax2D/01KWEDQ9HG6CSF6CNW0QVFV92E/images/head-front-left/frame_00000001.jpg",
 ]
+RIGHT_PATHS = [
+    path.replace("head-front-left", "head-front-right") for path in LEFT_PATHS
+]
+FRAME_INDICES = [0, 1]
 
 DEVICE = "cuda"
 RAW_WH = (2592, 1944)
@@ -48,6 +56,13 @@ REL_EPS = 1e-8
 
 # Tokens: min, median, max, mean, pNN (any percentile, e.g. p90 or p99.9).
 STATS = ["min", "median", "max", "mean", "p90", "p98", "p99"]
+
+
+class _StubModel:
+    """Stand-in for the checkpoint model so ``Pipeline`` builds without one."""
+
+    def to(self, device):
+        return self
 
 
 def _parse_stats(spec):
@@ -85,33 +100,58 @@ def _parse_stats(spec):
     return stats
 
 
-def test_preprocess_relative_diff(capsys):
+def test_pipeline_preprocess_matches_fast_path(capsys, monkeypatch):
     stats = _parse_stats(STATS)
     if not np.isfinite(REL_EPS) or REL_EPS <= 0:
         raise ValueError(f"REL_EPS must be finite and positive, got {REL_EPS!r}")
-    if not IMAGE_PATHS:
-        pytest.skip("no input images configured in IMAGE_PATHS")
+    if not LEFT_PATHS:
+        pytest.skip("no input images configured in LEFT_PATHS")
 
-    missing = [path for path in IMAGE_PATHS if not os.path.isfile(path)]
+    all_paths = LEFT_PATHS + RIGHT_PATHS
+    missing = [path for path in all_paths if not os.path.isfile(path)]
     if missing:
         pytest.skip("input image not found: " + ", ".join(missing))
     if DEVICE.startswith("cuda") and not torch.cuda.is_available():
         pytest.skip(f"configured CUDA device is unavailable: {DEVICE}")
 
-    left_map = build_session_remaps(SESSION_DIR, rotate=ROTATE)["left"]
-    maps = [left_map] * len(IMAGE_PATHS)
+    # Measure preprocessing, not checkpoint startup: the model is never used by
+    # Pipeline.preprocess, so a stub keeps construction cheap and GPU-free.
+    monkeypatch.setattr(pipeline_mod, "load_model", lambda ckpt: _StubModel())
+
+    calibration = load_calibration(SESSION_DIR)
+    batch = FrameBatch(
+        indices=list(FRAME_INDICES),
+        left=list(LEFT_PATHS),
+        right=list(RIGHT_PATHS),
+    )
+
+    # Ground truth: the legacy fast path over the interleaved flat lists,
+    # [f0_L, f0_R, f1_L, f1_R, ...], reshaped to (B, 2, 3, 256, 256).
+    remaps = build_session_remaps(SESSION_DIR, rotate=ROTATE)
+    flat_paths, flat_maps = [], []
+    for left_path, right_path in zip(LEFT_PATHS, RIGHT_PATHS):
+        flat_paths.append(left_path)
+        flat_maps.append(remaps["left"])
+        flat_paths.append(right_path)
+        flat_maps.append(remaps["right"])
 
     with torch.no_grad():
-        gt_output = torch.stack(
-            [preprocess(path, *left_map) for path in IMAGE_PATHS], dim=0
+        gt_output = preprocess_gpu(
+            flat_paths, flat_maps, device=DEVICE, raw_wh=RAW_WH
+        ).view(len(FRAME_INDICES), 2, 3, IMG_SIZE, IMG_SIZE)
+
+        pipeline = Pipeline(
+            calibration=calibration,
+            ckpt="<stubbed>",
+            device=DEVICE,
+            rotate=ROTATE,
+            preprocess="gpu",
         )
-        test_output = preprocess_gpu(
-            IMAGE_PATHS, maps, device=DEVICE, raw_wh=RAW_WH
-        )
+        test_output = pipeline.preprocess(batch)
 
     gt_output = gt_output.detach().cpu()
     test_output = test_output.detach().cpu()
-    expected_shape = (len(IMAGE_PATHS), 3, 256, 256)
+    expected_shape = (len(FRAME_INDICES), 2, 3, 256, 256)
     assert tuple(gt_output.shape) == expected_shape, (
         f"ground-truth output shape must be {expected_shape}, "
         f"got {tuple(gt_output.shape)}"
@@ -122,6 +162,12 @@ def test_preprocess_relative_diff(capsys):
     )
     assert torch.isfinite(gt_output).all(), "ground-truth output contains non-finite values"
     assert torch.isfinite(test_output).all(), "test output contains non-finite values"
+    # The pipeline stage must reproduce the fast path bit-for-bit, including the
+    # interleaved left/right view ordering within each frame.
+    assert torch.equal(test_output, gt_output), (
+        "Pipeline.preprocess diverged from the legacy fast path — tensor values "
+        "or view ordering differ"
+    )
 
     gt_values = gt_output.numpy().astype(np.float64, copy=False)
     test_values = test_output.numpy().astype(np.float64, copy=False)
@@ -134,14 +180,15 @@ def test_preprocess_relative_diff(capsys):
     zero_reference_values = int(np.count_nonzero(gt_values == 0))
     lines = [
         "",
-        "=== Preprocess relative-diff report ===",
-        "ground truth: preprocess (single)",
-        "test:         preprocess_gpu (batch)",
+        "=== Pipeline.preprocess relative-diff report ===",
+        "ground truth: preprocess_gpu (flat fast path, reshaped)",
+        "test:         Pipeline.preprocess (FrameBatch)",
         f"device:       {DEVICE}",
         f"rotation:     {ROTATE}",
         "inputs:",
     ]
-    lines += [f"  {path}" for path in IMAGE_PATHS]
+    lines += [f"  L {path}" for path in LEFT_PATHS]
+    lines += [f"  R {path}" for path in RIGHT_PATHS]
     lines += [
         f"output shape: {tuple(test_output.shape)}",
         f"values compared: {total_values}",
