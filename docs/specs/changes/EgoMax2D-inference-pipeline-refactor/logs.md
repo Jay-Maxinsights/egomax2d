@@ -70,3 +70,16 @@
 - `design/orchestrator.md`'s sketch calls `monitor.e2e_timer()` / `model_timer()` with no
   arguments, but the monitor implemented in commit-4 requires `stereo_frames`, so
   `run_sequential` passes `len(batch.indices)`.
+
+## commit-7-logs
+
+- The new CLI intentionally exposes `step`, `max_frames`, and `rotate` only via the YAML
+  `--config` (not as flags); the parity gate therefore matched the baseline's
+  `--max-frames 300` through a config file, overriding paths/`--out` on the CLI.
+- Running the parity gate on this host (24 GB card) required two workarounds, both
+  verification-environment only, not code: `batch_main`'s default `--batch-size 512`
+  OOMs during full-res nvjpeg decode (256 full-res images ≈ 14 GB stack), so both runs
+  used `--batch-size 32`; and `results/heatmap_egomax2d/` was root-owned from a prior
+  docker run, so it was moved to `results/heatmap_egomax2d.root_bak` and recreated
+  writable. Gate result: exact parity (0 validity mismatches, 0.0 joint diff, 0.0
+  confidence diff over 300 frames / 600 views).
