@@ -57,3 +57,12 @@
 - `python -m pytest tests/test_monitor.py -q`: `3 passed` in the base environment using
   controlled clock, CUDA-event, and resource values. The combined config, folder-input,
   and monitor regression run completed with `16 passed`.
+
+## commit-6-logs
+
+- `writer.py` had to be kept out of `io/__init__.py`. It imports torch, and
+  `io/__init__.py` runs on any `io.reader` import, which must stay torch-free so
+  `test_folder_input_source` still collects in the base (no-torch) environment.
+- `design/orchestrator.md`'s sketch calls `monitor.e2e_timer()` / `model_timer()` with no
+  arguments, but the monitor implemented in commit-4 requires `stereo_frames`, so
+  `run_sequential` passes `len(batch.indices)`.
