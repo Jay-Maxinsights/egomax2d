@@ -1,0 +1,19 @@
+# Configuration for reproducing the 300-frame legacy parity baseline.
+input:
+  type: folder
+  batch_size: 32
+  step: 1
+  max_frames: 1024
+
+processor:
+  device: cuda
+  rotate: right
+  preprocess: gpu
+
+monitor:
+  enabled: true
+  warmup: 9
+  report_json: results/heatmap_egomax2d/report.json
+
+output:
+  format: pt
