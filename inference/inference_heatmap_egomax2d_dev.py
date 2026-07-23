@@ -591,7 +591,7 @@ def batch_main():
     parser.add_argument("--output-dir", default="results/heatmap_egomax2d")
     parser.add_argument("--step", type=int, default=1, help="frame sampling step (default 1 = every frame)")
     parser.add_argument("--max-frames", type=int, default=0)
-    parser.add_argument("--batch-size", type=int, default=512,
+    parser.add_argument("--batch-size", type=int, default=32,
                         help="number of stereo frames per model forward (model batch = batch_size*2)")
     parser.add_argument("--rotate", choices=["right", "left", "none"], default="right")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -707,6 +707,17 @@ def batch_main():
     print(f"{'throughput':>18}: {1000.0 / g.mean():6.1f} batch/s  =  "
           f"{1000.0 * imgs_per_batch / g.mean():6.1f} img/s  (GPU forward only)")
     print(f"Timing CSV -> {timing_csv}")
+
+
+def gt_preprocess(left_image_path: str, right_image_path: str, remaps: dict) -> torch.Tensor:
+        """The ground truth preprocessing function for a single stereo pair"""
+        bgr_l = cv2.imread(left_image_path)
+        bgr_r = cv2.imread(right_image_path)
+
+        _ , tensor_l = remap_preprocess(bgr_l, *remaps[CAMS[0][1]])
+        _ , tensor_r = remap_preprocess(bgr_r, *remaps[CAMS[1][1]])
+
+        return torch.stack([tensor_l, tensor_r]).unsqueeze(0)
 
 
 if __name__ == "__main__":
