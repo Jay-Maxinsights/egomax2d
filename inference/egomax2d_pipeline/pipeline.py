@@ -10,6 +10,7 @@ code (see ``../../docs/specs/changes/EgoMax2D-inference-pipeline-refactor``).
 from __future__ import annotations
 
 import numpy as np
+import torch
 from torch import Tensor
 
 from pose_estimation.datasets.egomax2d.remap import build_remap

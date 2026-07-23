@@ -83,3 +83,6 @@
   docker run, so it was moved to `results/heatmap_egomax2d.root_bak` and recreated
   writable. Gate result: exact parity (0 validity mismatches, 0.0 joint diff, 0.0
   confidence diff over 300 frames / 600 views).
+
+## test-preprocess-update-logs
+Refactor tests/test_preprocess.py to make it more reasonable
